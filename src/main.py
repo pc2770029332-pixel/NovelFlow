@@ -185,6 +185,15 @@ def get_workflow(workflow_id: str) -> JSONResponse:
     return JSONResponse(wf.to_dict())
 
 
+@app.get("/api/workflows/{workflow_id}/chapters")
+def get_chapters(workflow_id: str) -> JSONResponse:
+    """获取各章节正文（初稿 + 润色稿），供前端历史查看。"""
+    wf = _workflows.get(workflow_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    return JSONResponse({"chapters": wf.chapters})
+
+
 @app.get("/api/workflows/{workflow_id}/stream")
 async def stream_workflow(workflow_id: str) -> StreamingResponse:
     """SSE 实时进度流。"""
