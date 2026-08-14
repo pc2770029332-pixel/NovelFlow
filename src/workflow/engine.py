@@ -55,6 +55,7 @@ def _chapter_count(chapters: Any) -> int:
 @dataclass
 class StepState:
     """单个流程步骤的状态"""
+
     key: str
     label: str
     status: str = "pending"  # pending | running | done | error
@@ -78,6 +79,7 @@ class StepState:
 @dataclass
 class NovelInput:
     """小说创作输入参数"""
+
     title: str
     genre: str = "玄幻"
     theme: str = ""
@@ -374,19 +376,31 @@ class NovelWorkflow:
         self.status = "running"
         await self._emit("start", self.to_dict())
         try:
+            self.current_step = "background"
             await self.step_background()
+
+            self.current_step = "outline"
             await self.step_outline()
 
             # 主笔 + 润色：逐章串行，保证上下文连贯
+            await self._update_step("writer", status="running")
+            await self._update_step("polisher", status="running")
             for chapter_no in range(1, self.input.chapters + 1):
+                self.current_step = "writer"
                 await self._emit("progress", {
                     "message": f"正在创作第 {chapter_no}/{self.input.chapters} 章...",
                     "chapter": chapter_no,
                     "total": self.input.chapters,
                 })
                 await self.step_write_chapter(chapter_no)
+
+                self.current_step = "polisher"
                 await self.step_polish_chapter(chapter_no)
 
+            await self._update_step("writer", status="done")
+            await self._update_step("polisher", status="done")
+
+            self.current_step = "archiver"
             await self.step_archive()
             self.status = "done"
             self.finished_at = datetime.now().isoformat(timespec="seconds")
@@ -395,6 +409,12 @@ class NovelWorkflow:
             self.status = "error"
             self.error_message = str(exc)
             self.finished_at = datetime.now().isoformat(timespec="seconds")
+            # 将仍在运行中的步骤标记为 error，避免前端一直转圈
+            for step in self.steps.values():
+                if step.status == "running":
+                    step.status = "error"
+                    if not step.finished_at:
+                        step.finished_at = datetime.now().isoformat(timespec="seconds")
             await self._emit("error", {"message": str(exc), **self.to_dict()})
         finally:
             await self.llm.close()
