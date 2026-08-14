@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovelFlow · AI 小说全流程创作工作台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">✍️</span>
+      <div class="brand-text">
+        <h1>NovelFlow</h1>
+        <p>AI 小说全流程创作工作台</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-history" class="btn ghost">🕘 历史记录</button>
+      <button id="btn-new" class="btn primary">＋ 新建项目</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- ===================== 创作台视图 ===================== -->
+    <section id="view-create" class="view active">
+      <div class="create-grid">
+        <div class="card novel-card">
+          <h2>📖 小说信息</h2>
+          <p class="hint">填写你的创作灵感，AI 将按「背景设计 → 章节细纲 → 主笔创作 → 润色修改 → 自动归档」全流程完成创作。</p>
+          <form id="novel-form" autocomplete="off">
+            <div class="field">
+              <label for="in-title">书名 <span class="req">*</span></label>
+              <input id="in-title" type="text" placeholder="例如：星陨之后">
+            </div>
+            <div class="field">
+              <label for="in-genre">题材 / 类型</label>
+              <input id="in-genre" type="text" list="genre-list" placeholder="例如：玄幻、科幻、都市…">
+              <datalist id="genre-list">
+                <option value="玄幻"><option value="奇幻"><option value="科幻">
+                <option value="都市"><option value="悬疑"><option value="武侠">
+                <option value="仙侠"><option value="历史"><option value="言情">
+                <option value="末世"><option value="无限流"><option value="轻小说">
+              </datalist>
+            </div>
+            <div class="field">
+              <label for="in-theme">核心主题</label>
+              <input id="in-theme" type="text" placeholder="例如：绝境中的人性抉择、成长与救赎">
+            </div>
+            <div class="field">
+              <label for="in-premise">一句话创意</label>
+              <textarea id="in-premise" rows="2" placeholder="用一句话描述故事的核心冲突与看点"></textarea>
+            </div>
+            <div class="field">
+              <label for="in-audience">目标读者</label>
+              <input id="in-audience" type="text" placeholder="例如：男频网文读者、青少年、全年龄">
+            </div>
+            <div class="field">
+              <label for="in-extra">补充要求</label>
+              <textarea id="in-extra" rows="2" placeholder="文风偏好、主角设定、必须包含的元素等（可选）"></textarea>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="in-chapters">章节数</label>
+                <input id="in-chapters" type="number" min="1" max="200" value="3">
+              </div>
+              <div class="field">
+                <label for="in-words">每章目标字数</label>
+                <input id="in-words" type="number" min="500" max="20000" step="500" value="2000">
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div class="card settings-card">
+          <h2>🤖 AI 角色配置</h2>
+          <p class="hint">每个角色可独立填写 API Key、端点与模型，支持任意 OpenAI 兼容接口（OpenAI / DeepSeek / Kimi / Ollama / LM Studio 等）。</p>
+          <div id="settings-list" class="settings-list"></div>
+        </div>
+      </div>
+
+      <div class="start-bar">
+        <button id="btn-start" class="btn start">🚀 开始全流程创作</button>
+      </div>
+    </section>
+
+    <!-- ===================== 运行 / 结果视图 ===================== -->
+    <section id="view-run" class="view">
+      <div class="run-header">
+        <div class="run-title-wrap">
+          <h2 id="run-title">未命名小说</h2>
+          <div id="run-meta" class="run-meta"></div>
+        </div>
+        <div class="run-actions">
+          <span id="run-status-badge" class="badge pending">等待中</span>
+          <button id="btn-download" class="btn success" disabled>⬇️ 下载全书</button>
+        </div>
+      </div>
+
+      <div class="pipeline" id="pipeline"></div>
+
+      <div class="progress-wrap" id="progress-wrap" hidden>
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+        <span class="progress-label" id="progress-label"></span>
+      </div>
+
+      <div class="run-grid">
+        <div class="card live-card">
+          <h3>📡 实时输出 <span id="live-step-label" class="live-step-label"></span></h3>
+          <pre id="live-output" class="live-output"></pre>
+        </div>
+        <div class="card tabs-card">
+          <div class="tabs" id="result-tabs">
+            <button class="tab active" data-tab="background">🌍 背景设定</button>
+            <button class="tab" data-tab="outline">🗺️ 章节细纲</button>
+            <button class="tab" data-tab="chapters">📚 正文</button>
+            <button class="tab" data-tab="archive">📦 归档</button>
+          </div>
+          <div id="tab-panels" class="tab-panels"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 历史记录弹窗 -->
+  <div id="history-modal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>🕘 历史记录</h2>
+        <button class="modal-close" id="btn-close-history">✕</button>
+      </div>
+      <div id="history-list" class="history-list"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
