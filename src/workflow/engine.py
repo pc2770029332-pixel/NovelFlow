@@ -24,18 +24,26 @@ from . import prompts
 
 
 def _extract_chapter_outline(outline_text: str, chapter_no: int) -> str:
-    """从完整细纲中提取指定章节的片段。"""
-    pattern = rf"##\s*第\s*{chapter_no}\s*章"
-    match = re.search(pattern, outline_text)
+    """从完整细纲中提取指定章节的片段（兼容多种“第 N 章”写法）。"""
+    text = outline_text or ""
+
+    def heading(n: int) -> re.Pattern:
+        return re.compile(rf"(?m)^#{{2,4}}\s*第\s*{n}\s*章")
+
+    match = heading(chapter_no).search(text)
     if not match:
-        return outline_text
+        # 兜底：不带 Markdown 标题标记的“第N章”
+        match = re.compile(rf"(?m)^第\s*{chapter_no}\s*章").search(text)
+    if not match:
+        return text
+
     start = match.start()
-    next_pattern = rf"##\s*第\s*{chapter_no + 1}\s*章"
-    next_match = re.search(next_pattern, outline_text[start + 1:])
+    next_match = heading(chapter_no + 1).search(text, start + 1)
+    if not next_match:
+        next_match = re.compile(rf"(?m)^第\s*{chapter_no + 1}\s*章").search(text, start + 1)
     if next_match:
-        end = start + 1 + next_match.start()
-        return outline_text[start:end]
-    return outline_text[start:]
+        return text[start:next_match.start()]
+    return text[start:]
 
 
 def _summarize(text: str, limit: int = 400) -> str:
@@ -91,6 +99,12 @@ class NovelInput:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "NovelInput":
+        def to_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
         return cls(
             title=str(data.get("title", "未命名小说")).strip() or "未命名小说",
             genre=str(data.get("genre", "玄幻")).strip() or "玄幻",
@@ -99,7 +113,7 @@ class NovelInput:
             audience=str(data.get("audience", "")).strip(),
             extra=str(data.get("extra", "")).strip(),
             chapters=_chapter_count(data.get("chapters", 3)),
-            words_per_chapter=int(data.get("words_per_chapter", 2000) or 2000),
+            words_per_chapter=max(1, to_int(data.get("words_per_chapter", 2000), 2000)),
         )
 
 
@@ -192,6 +206,18 @@ class NovelWorkflow:
         path.write_text(content, encoding="utf-8")
         return path
 
+    def persist_meta(self) -> None:
+        """把当前状态与章节写到磁盘，重启后历史可恢复。"""
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            data = self.to_dict()
+            data["chapters"] = self.chapters
+            (self.output_dir / "meta.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
     # ---------- 步骤实现 ----------
     async def step_background(self) -> None:
         key = "background"
@@ -213,6 +239,7 @@ class NovelWorkflow:
             self.background = text
             self._save_working_file("01_背景设定.md", text)
             await self._update_step(key, status="done")
+            self.persist_meta()
         except Exception as exc:
             await self._update_step(key, status="error", error=str(exc))
             raise
@@ -238,6 +265,7 @@ class NovelWorkflow:
             self.outline = text
             self._save_working_file("02_章节细纲.md", text)
             await self._update_step(key, status="done")
+            self.persist_meta()
         except Exception as exc:
             await self._update_step(key, status="error", error=str(exc))
             raise
@@ -274,6 +302,7 @@ class NovelWorkflow:
             })
             self._save_working_file(f"第{chapter_no:02d}章_初稿.md", text)
             await self._emit("chapter_done", {"chapter": chapter_no, "stage": "draft"})
+            self.persist_meta()
         except Exception as exc:
             await self._update_step(key, status="error", error=str(exc))
             raise
@@ -300,6 +329,7 @@ class NovelWorkflow:
             chapter["polished"] = text
             self._save_working_file(f"第{chapter_no:02d}章_润色稿.md", text)
             await self._emit("chapter_done", {"chapter": chapter_no, "stage": "polished"})
+            self.persist_meta()
         except Exception as exc:
             await self._update_step(key, status="error", error=str(exc))
             raise
@@ -327,7 +357,6 @@ class NovelWorkflow:
         try:
             self.archived_text = await self._stream_to_step(key, cfg, messages)
 
-            # 拼接最终全书文档
             full_parts = [
                 f"# {self.input.title}",
                 "",
@@ -367,6 +396,7 @@ class NovelWorkflow:
             self.archive_path = str(path)
 
             await self._update_step(key, status="done")
+            self.persist_meta()
         except Exception as exc:
             await self._update_step(key, status="error", error=str(exc))
             raise
@@ -382,7 +412,6 @@ class NovelWorkflow:
             self.current_step = "outline"
             await self.step_outline()
 
-            # 主笔 + 润色：逐章串行，保证上下文连贯
             await self._update_step("writer", status="running")
             await self._update_step("polisher", status="running")
             for chapter_no in range(1, self.input.chapters + 1):
@@ -409,7 +438,6 @@ class NovelWorkflow:
             self.status = "error"
             self.error_message = str(exc)
             self.finished_at = datetime.now().isoformat(timespec="seconds")
-            # 将仍在运行中的步骤标记为 error，避免前端一直转圈
             for step in self.steps.values():
                 if step.status == "running":
                     step.status = "error"
@@ -417,6 +445,7 @@ class NovelWorkflow:
                         step.finished_at = datetime.now().isoformat(timespec="seconds")
             await self._emit("error", {"message": str(exc), **self.to_dict()})
         finally:
+            self.persist_meta()
             await self.llm.close()
 
     def to_dict(self) -> dict[str, Any]:
