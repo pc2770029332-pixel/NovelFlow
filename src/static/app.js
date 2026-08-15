@@ -98,8 +98,11 @@ function renderSettings() {
             <div><strong>${meta.label}</strong><small>${meta.desc}</small></div>
           </div>
           ${isDefault
-            ? `<button type="button" class="btn mini" id="btn-copy-default">复制到全部角色</button>`
-            : `<label class="switch"><input type="checkbox" class="role-inherit" data-role="${key}" ${!isCustom ? "checked" : ""}><span>跟随默认</span></label>`}`}
+            ? `<div class="role-actions">
+                 <button type="button" class="btn mini" id="btn-test-connection">🔌 测试连接</button>
+                 <button type="button" class="btn mini" id="btn-copy-default">复制到全部角色</button>
+               </div>`
+            : `<label class="switch"><input type="checkbox" class="role-inherit" data-role="${key}" ${!isCustom ? "checked" : ""}><span>跟随默认</span></label>`}
         </div>
         <div class="role-fields ${!isDefault && !isCustom ? "is-locked" : ""}">
           <div class="field">
@@ -130,7 +133,6 @@ function renderSettings() {
 }
 
 function bindSettingsEvents() {
-  // 跟随默认开关
   $$(".role-inherit").forEach((cb) => {
     cb.addEventListener("change", () => {
       const role = cb.dataset.role;
@@ -138,7 +140,6 @@ function bindSettingsEvents() {
         state.customRoles.delete(role);
       } else {
         state.customRoles.add(role);
-        // 从服务器配置（已合并默认）填充到该角色，避免空白
         const src = (state.settings && state.settings[role]) || state.settings.default || {};
         setRoleFields(role, src);
       }
@@ -147,7 +148,6 @@ function bindSettingsEvents() {
     });
   });
 
-  // 温度滑块实时显示数值
   $$(".cfg-temp").forEach((r) => {
     r.addEventListener("input", () => {
       const v = $(".val[data-role='" + r.dataset.role + "']");
@@ -156,7 +156,6 @@ function bindSettingsEvents() {
     });
   });
 
-  // 默认配置变化时，同步到「跟随默认」的角色
   $$("[data-role='default']").forEach((el) => {
     if (el.classList.contains("cfg-temp")) return;
     el.addEventListener("input", syncLockedRoles);
@@ -173,6 +172,9 @@ function bindSettingsEvents() {
     renderSettings();
     showToast("已复制默认配置到全部角色");
   });
+
+  const testBtn = $("#btn-test-connection");
+  if (testBtn) testBtn.addEventListener("click", testConnection);
 }
 
 function setRoleFields(role, cfg) {
@@ -213,6 +215,24 @@ function collectSettings() {
     if (state.customRoles.has(key)) payload[key] = readRoleFields(key);
   }
   return payload;
+}
+
+async function testConnection() {
+  const cfg = readRoleFields("default");
+  const btn = $("#btn-test-connection");
+  if (btn) { btn.disabled = true; btn.textContent = "⏳ 测试中…"; }
+  try {
+    const res = await apiPost("/api/test-connection", { role: "default", config: cfg });
+    if (res.ok) {
+      showToast(`✅ 连接成功：${res.model || ""}（${res.latency_seconds ?? "?"} 秒）`);
+    } else {
+      showToast("❌ " + (res.error || "连接失败"));
+    }
+  } catch (e) {
+    showToast("测试失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "🔌 测试连接"; }
+  }
 }
 
 /* ===================== 启动工作流 ===================== */
@@ -268,7 +288,12 @@ function handleEvent(msg) {
   const data = msg.data || {};
   switch (evt) {
     case "snapshot":
+      applyWorkflow(data);
+      break;
     case "start":
+      applyWorkflow(data);
+      hideErrorBanner();
+      break;
     case "done":
       applyWorkflow(data);
       break;
@@ -286,6 +311,7 @@ function handleEvent(msg) {
       break;
     case "error":
       applyWorkflow(data);
+      showErrorBanner(data.message || data.error_message || "未知错误");
       showToast("流程出错：" + (data.message || data.error_message || "未知错误"));
       break;
     case "end":
@@ -312,6 +338,7 @@ function applyStep(step) {
   if (!state.workflow || !step || !step.key) return;
   state.workflow.steps[step.key] = step;
   if (step.status === "done" && step.output) state.stepOutputs[step.key] = step.output;
+  if (step.status === "error") showErrorBanner(step.error || (step.label + " 出错"));
   renderPipeline();
   renderRunHeader();
   renderActiveTab();
@@ -362,6 +389,7 @@ function resetLive() {
   $("#progress-wrap").hidden = true;
   $("#progress-fill").style.width = "0%";
   $("#btn-download").disabled = true;
+  hideErrorBanner();
 }
 
 /* ===================== 渲染 ===================== */
@@ -456,21 +484,6 @@ function renderChaptersPanel() {
   }).join("");
 }
 
-function bindChapterSegs() {
-  $$(".chapter-seg").forEach((segWrap) => {
-    segWrap.querySelectorAll(".seg").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        segWrap.querySelectorAll(".seg").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        const no = parseInt(btn.dataset.ch, 10);
-        const seg = btn.dataset.seg;
-        const c = state.chapters.find((x) => x.no === no);
-        if (c) segWrap.parentElement.querySelector(".chapter-body").textContent = seg === "draft" ? (c.draft || "") : (c.polished || c.draft || "");
-      });
-    });
-  });
-}
-
 function updateDownload() {
   const wf = state.workflow;
   $("#btn-download").disabled = !(wf && wf.archive_path);
@@ -519,7 +532,7 @@ async function openHistory() {
   try {
     const data = await apiGet("/api/workflows");
     const wfs = data.workflows || [];
-    if (!wfs.length) { list.innerHTML = '<div class="empty">暂无历史记录（注意：重启服务后内存中的记录会清空，归档文件保存在 output/ 目录）</div>'; return; }
+    if (!wfs.length) { list.innerHTML = '<div class="empty">暂无历史记录。完成一次创作后，归档文件会保存在 output/ 目录，重启后仍可在这里看到。</div>'; return; }
     list.innerHTML = wfs.map((w) => `
       <div class="history-item" data-id="${w.id}">
         <div class="hi-main">
@@ -562,6 +575,33 @@ function downloadArchive() {
   }
 }
 
+/* ===================== 错误提示条 ===================== */
+function ensureErrorBanner() {
+  let el = $("#error-banner");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "error-banner";
+    el.style.cssText = "margin:0 0 18px;padding:12px 16px;border:1px solid #f85149;background:rgba(248,81,73,0.12);color:#ffb4ae;border-radius:9px;white-space:pre-wrap;word-break:break-word;font-size:13px;";
+    el.hidden = true;
+    const pipeline = $("#pipeline");
+    if (pipeline && pipeline.parentElement) {
+      pipeline.parentElement.insertBefore(el, pipeline);
+    } else {
+      document.body.appendChild(el);
+    }
+  }
+  return el;
+}
+function showErrorBanner(msg) {
+  const el = ensureErrorBanner();
+  el.textContent = "⚠️ " + msg;
+  el.hidden = false;
+}
+function hideErrorBanner() {
+  const el = $("#error-banner");
+  if (el) el.hidden = true;
+}
+
 /* ===================== Toast ===================== */
 let toastTimer = null;
 function showToast(msg) {
@@ -573,7 +613,7 @@ function showToast(msg) {
   toastTimer = setTimeout(() => {
     t.classList.remove("show");
     setTimeout(() => { t.hidden = true; }, 250);
-  }, 3400);
+  }, 5000);
 }
 
 /* ===================== 事件绑定 & 初始化 ===================== */
@@ -589,7 +629,6 @@ function bindStaticEvents() {
     tab.addEventListener("click", () => { state.activeTab = tab.dataset.tab; renderActiveTab(); });
   });
 
-  // 章节切换事件委托
   $("#tab-panels").addEventListener("click", (e) => {
     const seg = e.target.closest(".seg");
     if (!seg) return;
