@@ -5,13 +5,15 @@
     - 设置管理（API Key / 端点 / 模型）
     - 启动工作流
     - SSE 实时进度推送
-    - 历史记录与下载
+    - 历史记录与下载（重启后仍可从 output/ 恢复）
+    - LLM 连接测试
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .llm_client import LLMClient, LLMConfig, LLMError
 from .workflow.engine import NovelInput, NovelWorkflow
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,8 +31,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONFIG_DIR = ROOT / "config"
 OUTPUT_DIR = ROOT / "output"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
+META_FILENAME = "meta.json"
 
-app = FastAPI(title="NovelFlow", version="0.1.0")
+app = FastAPI(title="NovelFlow", version="0.2.0")
 
 # ============ 全局状态 ============
 _workflows: dict[str, NovelWorkflow] = {}
@@ -62,11 +66,9 @@ def _load_settings() -> dict[str, dict[str, Any]]:
         return _settings_cache
 
     settings: dict[str, dict[str, Any]] = {}
-    # 先写默认值
     for role, cfg in DEFAULT_SETTINGS.items():
         settings[role] = dict(cfg)
 
-    # 再从文件覆盖
     if SETTINGS_FILE.exists():
         try:
             saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -78,7 +80,6 @@ def _load_settings() -> dict[str, dict[str, Any]]:
         except Exception:
             pass
 
-    # 补齐所有角色的模型配置（继承 default）
     base = settings.get("default", {})
     for role in ["background", "outline", "writer", "polisher", "archiver"]:
         merged = dict(base)
@@ -124,13 +125,57 @@ def save_settings(payload: SettingsPayload) -> JSONResponse:
             continue
         old = old_settings.get(role, {})
         api_key = str(cfg.get("api_key", ""))
-        # 脱敏值保持不变
         if "****" in api_key:
             cfg["api_key"] = old.get("api_key", "")
         old_settings.setdefault(role, {}).update(cfg)
 
+    # 前端只提交 default + 已自定义的角色；其余角色应回到「跟随默认」，
+    # 因此清除它们的历史单独覆盖，避免切换回“跟随默认”后仍用旧 Key / 旧模型。
+    for role in ["background", "outline", "writer", "polisher", "archiver"]:
+        if role not in new_settings:
+            old_settings[role] = {}
+
     _save_settings(old_settings)
     return JSONResponse({"ok": True})
+
+
+class TestConnectionPayload(BaseModel):
+    role: str = "default"
+    config: dict[str, Any] | None = None
+
+
+@app.post("/api/test-connection")
+async def test_connection(payload: TestConnectionPayload) -> JSONResponse:
+    """用一条极短消息测试 LLM 配置是否可用。"""
+    if payload.config:
+        cfg = LLMConfig.from_dict(payload.config)
+    else:
+        settings = _load_settings()
+        cfg = LLMConfig.from_dict(settings.get(payload.role) or settings.get("default"))
+
+    # 若前端传来的是脱敏 Key，则用已保存的真实 Key 补回
+    if "****" in (cfg.api_key or ""):
+        settings = _load_settings()
+        saved = (settings.get(payload.role) or settings.get("default") or {}).get("api_key", "")
+        cfg.api_key = saved
+
+    base = (cfg.base_url or "").lower()
+    is_local = any(h in base for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+    if not cfg.api_key and not is_local:
+        return JSONResponse({"ok": False, "error": "API Key 为空，请先在「默认配置」里填写 API Key。"})
+
+    client = LLMClient()
+    try:
+        started = time.time()
+        reply = await client.chat(cfg, [{"role": "user", "content": "请只回复：连接成功"}])
+        elapsed = round(time.time() - started, 2)
+        return JSONResponse({"ok": True, "model": cfg.model, "latency_seconds": elapsed, "reply": reply[:120]})
+    except LLMError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        await client.close()
 
 
 # ============ 工作流 API ============
@@ -145,7 +190,6 @@ async def start_workflow(payload: RunPayload) -> JSONResponse:
     workflow_id = uuid.uuid4().hex[:12]
     novel_input = NovelInput.from_dict(payload.input)
 
-    # 如果传了 settings，先保存
     if payload.settings:
         _save_settings(payload.settings)
 
@@ -162,6 +206,7 @@ async def start_workflow(payload: RunPayload) -> JSONResponse:
         event_queue=queue,
     )
     _workflows[workflow_id] = wf
+    wf.persist_meta()
 
     task = asyncio.create_task(wf.run())
     _tasks[workflow_id] = task
@@ -169,29 +214,65 @@ async def start_workflow(payload: RunPayload) -> JSONResponse:
     return JSONResponse({"workflow_id": workflow_id})
 
 
+def _read_meta(workflow_id: str) -> dict[str, Any] | None:
+    p = OUTPUT_DIR / workflow_id / META_FILENAME
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _scan_history() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not OUTPUT_DIR.exists():
+        return items
+    for meta in OUTPUT_DIR.glob(f"*/{META_FILENAME}"):
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("id"):
+                items.append(data)
+        except Exception:
+            continue
+    return items
+
+
 @app.get("/api/workflows")
 def list_workflows() -> JSONResponse:
-    """列出所有工作流。"""
+    """列出所有工作流（内存 + 磁盘历史）。"""
     items = [w.to_dict() for w in _workflows.values()]
-    items.sort(key=lambda x: x["created_at"], reverse=True)
+    seen = {w["id"] for w in items}
+    for meta in _scan_history():
+        wid = meta.get("id")
+        if wid and wid not in seen:
+            items.append(meta)
+            seen.add(wid)
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return JSONResponse({"workflows": items})
 
 
 @app.get("/api/workflows/{workflow_id}")
 def get_workflow(workflow_id: str) -> JSONResponse:
     wf = _workflows.get(workflow_id)
-    if not wf:
-        raise HTTPException(status_code=404, detail="工作流不存在")
-    return JSONResponse(wf.to_dict())
+    if wf:
+        return JSONResponse(wf.to_dict())
+    meta = _read_meta(workflow_id)
+    if meta:
+        return JSONResponse(meta)
+    raise HTTPException(status_code=404, detail="工作流不存在")
 
 
 @app.get("/api/workflows/{workflow_id}/chapters")
 def get_chapters(workflow_id: str) -> JSONResponse:
     """获取各章节正文（初稿 + 润色稿），供前端历史查看。"""
     wf = _workflows.get(workflow_id)
-    if not wf:
-        raise HTTPException(status_code=404, detail="工作流不存在")
-    return JSONResponse({"chapters": wf.chapters})
+    if wf:
+        return JSONResponse({"chapters": wf.chapters})
+    meta = _read_meta(workflow_id)
+    if meta:
+        return JSONResponse({"chapters": meta.get("chapters", [])})
+    raise HTTPException(status_code=404, detail="工作流不存在")
 
 
 @app.get("/api/workflows/{workflow_id}/stream")
@@ -202,7 +283,6 @@ async def stream_workflow(workflow_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="工作流不存在")
 
     async def event_generator():
-        # 先发送当前完整状态
         wf = _workflows.get(workflow_id)
         if wf:
             yield f"data: {json.dumps({'event': 'snapshot', 'data': wf.to_dict()}, ensure_ascii=False)}\n\n"
@@ -212,14 +292,12 @@ async def stream_workflow(workflow_id: str) -> StreamingResponse:
                 item = await asyncio.wait_for(queue.get(), timeout=25.0)
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             except asyncio.TimeoutError:
-                # 心跳，保持连接
                 yield ": keepalive\n\n"
             except asyncio.CancelledError:
                 break
 
             wf = _workflows.get(workflow_id)
             if wf and wf.status in ("done", "error"):
-                # 等队列清空后结束
                 if queue.empty():
                     yield f"data: {json.dumps({'event': 'end', 'data': wf.to_dict()}, ensure_ascii=False)}\n\n"
                     break
@@ -237,17 +315,30 @@ async def stream_workflow(workflow_id: str) -> StreamingResponse:
 
 @app.get("/api/workflows/{workflow_id}/download")
 def download_archive(workflow_id: str):
+    path: Path | None = None
     wf = _workflows.get(workflow_id)
-    if not wf or not wf.archive_path:
+    if wf and wf.archive_path:
+        path = Path(wf.archive_path)
+
+    if path is None:
+        proj = OUTPUT_DIR / workflow_id
+        if proj.exists():
+            candidates = sorted(proj.glob("*.md"))
+            for c in candidates:
+                if "全书" in c.name:
+                    path = c
+                    break
+            if path is None and candidates:
+                path = candidates[-1]
+
+    if not path or not path.exists():
         raise HTTPException(status_code=404, detail="归档文件尚未生成")
-    path = Path(wf.archive_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="归档文件不存在")
-    return FileResponse(
-        path,
-        filename=path.name,
-        media_type="text/markdown; charset=utf-8",
-    )
+    return FileResponse(path, filename=path.name, media_type="text/markdown; charset=utf-8")
+
+
+@app.get("/api/health")
+def health() -> JSONResponse:
+    return JSONResponse({"ok": True, "version": app.version, "workflows_in_memory": len(_workflows)})
 
 
 # ============ 静态页面 ============
