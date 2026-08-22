@@ -130,9 +130,14 @@ class LLMClient:
                 body = (await resp.aread()).decode("utf-8", errors="ignore")
                 raise LLMError(f"LLM 流式请求失败 [{resp.status_code}]: {body[:500]}")
 
+            raw_lines: list[str] = []
+            yielded = False
             async for line in resp.aiter_lines():
                 line = line.strip()
-                if not line or not line.startswith("data:"):
+                if not line:
+                    continue
+                raw_lines.append(line)
+                if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
@@ -141,6 +146,20 @@ class LLMClient:
                     obj = json.loads(data)
                     delta = obj["choices"][0]["delta"].get("content")
                     if delta:
+                        yielded = True
                         yield delta
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
+
+            # Some OpenAI-compatible endpoints ignore stream=true and return a
+            # normal JSON completion. Treat it as a one-chunk stream instead of
+            # silently returning an empty result.
+            if not yielded and raw_lines:
+                body = "".join(raw_lines).strip()
+                try:
+                    obj = json.loads(body.removeprefix("data:").strip())
+                    content = obj["choices"][0]["message"].get("content") or ""
+                    if content:
+                        yield content
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                    pass
