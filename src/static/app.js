@@ -3,23 +3,34 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-const STEP_KEYS = ["background", "outline", "writer", "polisher", "archiver"];
+const STEP_KEYS = ["background", "outline", "chapter_outline", "writer", "polisher", "continuity", "archiver"];
+const PIPELINE_KEYS = ["background", "background_review", "outline", "review", "chapter_outline", "chapter_review", "writer", "polisher", "continuity", "body_review", "handoff_review"];
+const CONFIG_HISTORY_KEY = "novelflow_config_history";
 
 const ROLE_META = {
   default:    { label: "默认配置", icon: "⚙️", desc: "未自定义的角色将继承此配置" },
   background: { label: "背景设计", icon: "🌍", desc: "世界观 · 人物 · 力量体系 · 势力" },
   outline:    { label: "章节细纲", icon: "🗺️", desc: "逐章细纲 · 冲突 · 钩子" },
+  chapter_outline: { label: "本轮细纲", icon: "🧭", desc: "当前连续章节的详细规划" },
   writer:     { label: "主笔创作", icon: "✒️", desc: "逐章正文撰写" },
   polisher:   { label: "润色修改", icon: "✨", desc: "语病 · 节奏 · 风格统一" },
   archiver:   { label: "自动归档", icon: "📦", desc: "作品卡 · 简介 · 人物表 · 全书导出" },
+  continuity: { label: "连续性记忆", icon: "🧠", desc: "人物状态 · 时间线 · 伏笔" },
 };
 
 const STEP_LABEL = {
   background: "背景设计",
-  outline: "章节细纲",
+  background_review: "背景确认",
+  outline: "本卷规划",
+  review: "卷规划审核",
+  chapter_outline: "本轮细纲",
+  chapter_review: "细纲审核",
   writer: "主笔创作",
   polisher: "润色修改",
-  archiver: "自动归档",
+  archiver: "成果整理",
+  continuity: "连续性记忆",
+  body_review: "正文审核",
+  handoff_review: "卷末交接",
 };
 
 const state = {
@@ -33,6 +44,8 @@ const state = {
   currentChapter: 0,
   es: null,
   activeTab: "background",
+  configHistory: JSON.parse(localStorage.getItem(CONFIG_HISTORY_KEY) || "[]"),
+  liveChars: 0,
 };
 
 /* ===================== 工具 ===================== */
@@ -43,7 +56,7 @@ function escAttr(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function statusText(st) {
-  return { pending: "等待中", running: "创作中", done: "已完成", error: "出错" }[st] || st;
+  return { pending: "等待中", running: "创作中", awaiting_background_review: "等待背景确认", awaiting_review: "等待卷规划审核", awaiting_chapter_review: "等待细纲审核", awaiting_body_review: "等待正文审核", awaiting_handoff_review: "等待卷末交接审核", done: "已完成", error: "出错" }[st] || st;
 }
 function formatTime(iso) {
   if (!iso) return "";
@@ -89,6 +102,9 @@ function renderSettings() {
     const isCustom = state.customRoles.has(key);
     const eff = isDefault || isCustom ? cfg : defaultCfg;
     const temp = eff.temperature ?? 0.8;
+    const roleControl = isDefault
+      ? '<div class="role-actions"><button type="button" class="btn mini btn-test-connection" data-role="' + key + '">测试连接</button><button type="button" class="btn mini" id="btn-copy-default">复制到全部角色</button></div>'
+      : '<div class="role-actions"><button type="button" class="btn mini btn-test-connection" data-role="' + key + '">测试连接</button><label class="switch"><input type="checkbox" class="role-inherit" data-role="' + key + '" ' + (!isCustom ? "checked" : "") + '><span>跟随默认</span></label></div>';
 
     html += `
       <div class="role-card ${isDefault ? "role-default" : ""}" data-role="${key}">
@@ -97,12 +113,7 @@ function renderSettings() {
             <span class="role-icon">${meta.icon}</span>
             <div><strong>${meta.label}</strong><small>${meta.desc}</small></div>
           </div>
-          ${isDefault
-            ? `<div class="role-actions">
-                 <button type="button" class="btn mini" id="btn-test-connection">🔌 测试连接</button>
-                 <button type="button" class="btn mini" id="btn-copy-default">复制到全部角色</button>
-               </div>`
-            : `<label class="switch"><input type="checkbox" class="role-inherit" data-role="${key}" ${!isCustom ? "checked" : ""}><span>跟随默认</span></label>`}
+          ${roleControl}
         </div>
         <div class="role-fields ${!isDefault && !isCustom ? "is-locked" : ""}">
           <div class="field">
@@ -130,9 +141,67 @@ function renderSettings() {
   }
   wrap.innerHTML = html;
   bindSettingsEvents();
+  renderMemoryList();
+}
+
+function cloneConfig(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function rememberSettings(settings) {
+  state.configHistory = [{
+    id: String(Date.now()),
+    savedAt: new Date().toISOString(),
+    settings: cloneConfig(settings),
+  }, ...state.configHistory].slice(0, 12);
+  localStorage.setItem(CONFIG_HISTORY_KEY, JSON.stringify(state.configHistory));
+  renderMemoryList();
+}
+
+function renderMemoryList() {
+  const wrap = $("#settings-history-list");
+  if (!wrap) return;
+  if (!state.configHistory.length) {
+    wrap.innerHTML = '<div class="memory-empty">还没有保存过的配置</div>';
+    return;
+  }
+  wrap.innerHTML = state.configHistory.map((item) => {
+    const roles = Object.keys(item.settings || {}).filter((key) => key !== "default").length;
+    return `<div class="memory-item" data-memory-id="${escAttr(item.id)}">
+      <div><strong>${escHtml(formatTime(item.savedAt))}</strong><small>${roles ? roles + " 个自定义角色" : "默认配置"}</small></div>
+      <div class="memory-actions"><button class="btn mini memory-restore" data-memory-id="${escAttr(item.id)}">恢复</button><button class="btn mini ghost memory-delete" data-memory-id="${escAttr(item.id)}">删除</button></div>
+    </div>`;
+  }).join("");
+  wrap.querySelectorAll(".memory-restore").forEach((btn) => btn.addEventListener("click", () => restoreSettings(btn.dataset.memoryId)));
+  wrap.querySelectorAll(".memory-delete").forEach((btn) => btn.addEventListener("click", () => deleteSettingsMemory(btn.dataset.memoryId)));
+}
+
+function restoreSettings(id) {
+  const item = state.configHistory.find((entry) => entry.id === id);
+  if (!item) return;
+  state.settings = cloneConfig(item.settings);
+  state.customRoles = new Set(Object.keys(state.settings).filter((key) => key !== "default"));
+  localStorage.setItem("novelflow_custom_roles", JSON.stringify([...state.customRoles]));
+  renderSettings();
+  showToast("已恢复配置，点击保存后生效");
+}
+
+function deleteSettingsMemory(id) {
+  state.configHistory = state.configHistory.filter((entry) => entry.id !== id);
+  localStorage.setItem(CONFIG_HISTORY_KEY, JSON.stringify(state.configHistory));
+  renderMemoryList();
+}
+
+function clearSettingsHistory() {
+  if (!state.configHistory.length) return;
+  state.configHistory = [];
+  localStorage.removeItem(CONFIG_HISTORY_KEY);
+  renderMemoryList();
+  showToast("配置记忆已清空");
 }
 
 function bindSettingsEvents() {
+  // 跟随默认开关
   $$(".role-inherit").forEach((cb) => {
     cb.addEventListener("change", () => {
       const role = cb.dataset.role;
@@ -140,6 +209,7 @@ function bindSettingsEvents() {
         state.customRoles.delete(role);
       } else {
         state.customRoles.add(role);
+        // 从服务器配置（已合并默认）填充到该角色，避免空白
         const src = (state.settings && state.settings[role]) || state.settings.default || {};
         setRoleFields(role, src);
       }
@@ -148,6 +218,7 @@ function bindSettingsEvents() {
     });
   });
 
+  // 温度滑块实时显示数值
   $$(".cfg-temp").forEach((r) => {
     r.addEventListener("input", () => {
       const v = $(".val[data-role='" + r.dataset.role + "']");
@@ -156,6 +227,7 @@ function bindSettingsEvents() {
     });
   });
 
+  // 默认配置变化时，同步到「跟随默认」的角色
   $$("[data-role='default']").forEach((el) => {
     if (el.classList.contains("cfg-temp")) return;
     el.addEventListener("input", syncLockedRoles);
@@ -173,8 +245,9 @@ function bindSettingsEvents() {
     showToast("已复制默认配置到全部角色");
   });
 
-  const testBtn = $("#btn-test-connection");
-  if (testBtn) testBtn.addEventListener("click", testConnection);
+  $$(".btn-test-connection").forEach((btn) => {
+    btn.addEventListener("click", () => testConnection(btn.dataset.role));
+  });
 }
 
 function setRoleFields(role, cfg) {
@@ -217,21 +290,82 @@ function collectSettings() {
   return payload;
 }
 
-async function testConnection() {
-  const cfg = readRoleFields("default");
-  const btn = $("#btn-test-connection");
-  if (btn) { btn.disabled = true; btn.textContent = "⏳ 测试中…"; }
+function collectSettingsPayload() {
+  return {
+    settings: collectSettings(),
+    inherit_roles: STEP_KEYS.filter((key) => !state.customRoles.has(key)),
+  };
+}
+
+function openSettings() {
+  $("#settings-modal").hidden = false;
+  $("#btn-close-settings").focus();
+}
+
+function closeSettings() {
+  $("#settings-modal").hidden = true;
+  $("#btn-settings").focus();
+}
+
+async function saveSettings() {
+  const btn = $("#btn-save-settings");
+  btn.disabled = true;
+  btn.textContent = "正在保存...";
   try {
-    const res = await apiPost("/api/test-connection", { role: "default", config: cfg });
-    if (res.ok) {
-      showToast(`✅ 连接成功：${res.model || ""}（${res.latency_seconds ?? "?"} 秒）`);
-    } else {
-      showToast("❌ " + (res.error || "连接失败"));
-    }
+    const payload = collectSettingsPayload();
+    await apiPost("/api/settings", payload);
+    rememberSettings(payload.settings);
+    await loadSettings();
+    showToast("AI 配置已保存");
+    closeSettings();
   } catch (e) {
-    showToast("测试失败：" + e.message);
+    showToast("保存失败：" + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "🔌 测试连接"; }
+    btn.disabled = false;
+    btn.textContent = "保存配置";
+  }
+}
+
+function renderApiList() {
+  const wrap = $("#api-list");
+  if (!wrap) return;
+  const settings = state.settings || {};
+  wrap.innerHTML = ["default", ...STEP_KEYS].map((role) => {
+    const cfg = settings[role] || settings.default || {};
+    const endpoint = String(cfg.base_url || "").replace(/\/$/, "") + "/chat/completions";
+    return `<div class="api-item"><div class="api-item-head"><strong>${ROLE_META[role]?.icon || "⚙️"} ${ROLE_META[role]?.label || role}</strong><button class="btn mini copy-api" data-api-url="${escAttr(endpoint)}">复制地址</button></div><code>${escHtml(endpoint)}</code><small>模型：${escHtml(cfg.model || "未设置")} · Key：${cfg.api_key ? "已配置" : "未配置"}</small></div>`;
+  }).join("");
+  wrap.querySelectorAll(".copy-api").forEach((btn) => btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(btn.dataset.apiUrl); showToast("API 地址已复制"); }
+    catch (_) { showToast(btn.dataset.apiUrl); }
+  }));
+}
+
+function openApiViewer() {
+  renderApiList();
+  $("#api-modal").hidden = false;
+  $("#btn-close-api").focus();
+}
+
+function closeApiViewer() {
+  $("#api-modal").hidden = true;
+  $("#btn-api-view").focus();
+}
+
+async function testConnection(role) {
+  const btn = $(".btn-test-connection[data-role='" + role + "']");
+  const config = readRoleFields(role);
+  btn.disabled = true;
+  btn.textContent = "正在测试...";
+  try {
+    const effectiveRole = role === "default" || state.customRoles.has(role) ? role : "default";
+    const result = await apiPost("/api/test-connection", { config, role: effectiveRole });
+    showToast("连接成功：" + (result.reply || result.model));
+  } catch (e) {
+    showToast("连接失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "测试连接";
   }
 }
 
@@ -245,7 +379,14 @@ function collectInput() {
     audience: $("#in-audience").value.trim(),
     extra: $("#in-extra").value.trim(),
     chapters: parseInt($("#in-chapters").value, 10) || 3,
+    start_chapter: parseInt($("#in-start-chapter").value, 10) || 1,
     words_per_chapter: parseInt($("#in-words").value, 10) || 2000,
+    total_words: parseInt($("#in-total-words").value, 10) || 100000,
+    volume_words: parseInt($("#in-volume-words").value, 10) || 100000,
+    batch_size: parseInt($("#in-batch-size").value, 10) || 3,
+    skip_volume_review: $("#in-skip-volume-review").checked,
+    skip_outline_review: $("#in-skip-outline-review").checked,
+    skip_body_review: $("#in-skip-body-review").checked,
   };
 }
 
@@ -253,13 +394,12 @@ async function startWorkflow() {
   const input = collectInput();
   if (!input.title) { showToast("请先填写书名"); return; }
 
-  const settings = collectSettings();
   const btn = $("#btn-start");
   btn.disabled = true;
   btn.textContent = "⏳ 正在启动…";
   try {
-    await apiPost("/api/settings", { settings });
-    const res = await apiPost("/api/run", { input, settings });
+    await apiPost("/api/settings", collectSettingsPayload());
+    const res = await apiPost("/api/run", { input });
     state.workflowId = res.workflow_id;
     resetLive();
     switchView("run");
@@ -268,7 +408,7 @@ async function startWorkflow() {
     showToast("启动失败：" + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = "🚀 开始全流程创作";
+    btn.textContent = "开始当前卷创作";
   }
 }
 
@@ -277,10 +417,19 @@ function connectStream(id) {
   if (state.es) { state.es.close(); state.es = null; }
   const es = new EventSource("/api/workflows/" + id + "/stream");
   state.es = es;
+  setLiveConnection("连接中", "connecting");
   es.onmessage = (e) => {
+    setLiveConnection("实时连接", "connected");
     try { handleEvent(JSON.parse(e.data)); } catch (_) {}
   };
-  es.onerror = () => { /* EventSource 会自动重连；结束由 end 事件关闭 */ };
+  es.onerror = () => { setLiveConnection("重连中", "reconnecting"); };
+}
+
+function setLiveConnection(label, status) {
+  const el = $("#live-connection");
+  if (!el) return;
+  el.textContent = label;
+  el.className = "live-connection " + status;
 }
 
 function handleEvent(msg) {
@@ -288,17 +437,20 @@ function handleEvent(msg) {
   const data = msg.data || {};
   switch (evt) {
     case "snapshot":
-      applyWorkflow(data);
-      break;
     case "start":
-      applyWorkflow(data);
-      hideErrorBanner();
-      break;
     case "done":
       applyWorkflow(data);
       break;
     case "step_update":
       applyStep(data);
+      break;
+    case "review_required":
+    case "background_review_required":
+    case "chapter_review_required":
+    case "body_review_required":
+    case "handoff_review_required":
+    case "review_approved":
+      applyWorkflow(data);
       break;
     case "chunk":
       onChunk(data);
@@ -311,7 +463,6 @@ function handleEvent(msg) {
       break;
     case "error":
       applyWorkflow(data);
-      showErrorBanner(data.message || data.error_message || "未知错误");
       showToast("流程出错：" + (data.message || data.error_message || "未知错误"));
       break;
     case "end":
@@ -324,7 +475,7 @@ function handleEvent(msg) {
 function applyWorkflow(wf) {
   if (!wf || !wf.steps) return;
   state.workflow = wf;
-  for (const k of STEP_KEYS) {
+  for (const k of Object.keys(wf.steps)) {
     const st = wf.steps[k];
     if (st && st.status === "done" && st.output) state.stepOutputs[k] = st.output;
   }
@@ -332,16 +483,19 @@ function applyWorkflow(wf) {
   renderRunHeader();
   renderActiveTab();
   updateDownload();
+  renderReviewGate();
+  renderBatchReviewGate();
 }
 
 function applyStep(step) {
   if (!state.workflow || !step || !step.key) return;
   state.workflow.steps[step.key] = step;
   if (step.status === "done" && step.output) state.stepOutputs[step.key] = step.output;
-  if (step.status === "error") showErrorBanner(step.error || (step.label + " 出错"));
   renderPipeline();
   renderRunHeader();
   renderActiveTab();
+  renderReviewGate();
+  renderBatchReviewGate();
 }
 
 function onChunk(data) {
@@ -349,8 +503,10 @@ function onChunk(data) {
   const delta = data.delta || "";
   if (!step || !delta) return;
   state.stepOutputs[step] = (state.stepOutputs[step] || "") + delta;
+  state.liveChars += delta.length;
   if (step === "writer" || step === "polisher") state.chapterBuffer += delta;
   updateLiveOutput(step);
+  $("#live-count").textContent = state.liveChars.toLocaleString("zh-CN") + " 字符";
   scheduleTabsRender();
 }
 
@@ -383,13 +539,16 @@ function resetLive() {
   state.stepOutputs = {};
   state.chapterBuffer = "";
   state.currentChapter = 0;
+  state.liveChars = 0;
   for (const k of STEP_KEYS) state.stepOutputs[k] = "";
   $("#live-output").textContent = "";
   $("#live-step-label").textContent = "";
   $("#progress-wrap").hidden = true;
   $("#progress-fill").style.width = "0%";
   $("#btn-download").disabled = true;
-  hideErrorBanner();
+  $("#review-gate").hidden = true;
+  $("#live-count").textContent = "0 字符";
+  setLiveConnection("未连接", "idle");
 }
 
 /* ===================== 渲染 ===================== */
@@ -402,27 +561,140 @@ function renderPipeline() {
   const el = $("#pipeline");
   if (!state.workflow) return;
   let html = "";
-  STEP_KEYS.forEach((k, i) => {
+  PIPELINE_KEYS.forEach((k, i) => {
     const st = state.workflow.steps[k] || { status: "pending" };
     const icon = st.status === "done" ? "✓" : st.status === "running" ? "◌" : st.status === "error" ? "!" : "·";
     html += `<div class="pipe-step ${st.status}">
       <div class="pipe-dot">${icon}</div>
       <div class="pipe-label">${STEP_LABEL[k]}</div>
     </div>`;
-    if (i < STEP_KEYS.length - 1) html += `<div class="pipe-line ${st.status === "done" ? "done" : ""}"></div>`;
+    if (i < PIPELINE_KEYS.length - 1) html += `<div class="pipe-line ${st.status === "done" ? "done" : ""}"></div>`;
   });
   el.innerHTML = html;
+}
+
+function renderReviewGate() {
+  const gate = $("#review-gate");
+  const wf = state.workflow;
+  const isAwaiting = wf && (wf.status === "awaiting_background_review" || wf.status === "awaiting_review" || wf.status === "awaiting_chapter_review" || wf.status === "awaiting_handoff_review");
+  gate.hidden = !isAwaiting;
+  if (!isAwaiting) return;
+  const isBackground = wf.status === "awaiting_background_review";
+  const isVolume = wf.status === "awaiting_review";
+  const isHandoff = wf.status === "awaiting_handoff_review";
+  $("#review-title").textContent = isBackground ? "确认背景与人物设定" : (isHandoff ? "审核卷末交接信息" : (isVolume ? "审核本卷规划" : `审核第 ${wf.current_chapter}-${wf.batch_end} 章细纲`));
+  $("#review-desc").textContent = isBackground ? "背景设定是后续所有章节的依据。确认后才会开始本卷规划。" : (isHandoff ? "确认本卷收束和交接信息后，才会生成下一卷规划。" : (isVolume ? "确认本卷方向后，系统才会生成本轮连续章节细纲。" : "确认细纲后，系统会依次生成、润色并检查本轮正文。"));
+  $("#review-label").textContent = isBackground ? "背景与人物设定" : (isHandoff ? "卷末交接信息" : (isVolume ? "本卷规划" : "本轮章节细纲"));
+  $("#btn-approve-review").textContent = isBackground ? "确认背景，开始本卷规划" : (isHandoff ? "确认并开始下一卷" : (isVolume ? "确认卷规划" : "确认并开始写正文"));
+  $("#btn-skip-review").hidden = isBackground;
+  const outline = isBackground ? (wf.steps?.background?.output || state.stepOutputs.background || "") : (isHandoff ? (wf.steps?.handoff_review?.output || "") : (isVolume ? (wf.steps?.outline?.output || state.stepOutputs.outline || "") : (wf.steps?.chapter_outline?.output || state.stepOutputs.chapter_outline || "")));
+  const field = $("#review-outline");
+  if (field.value !== outline && !field.dataset.edited) field.value = outline;
+}
+
+function renderBatchReviewGate() {
+  const gate = $("#batch-review-gate");
+  const wf = state.workflow;
+  const awaiting = wf && wf.status === "awaiting_body_review";
+  gate.hidden = !awaiting;
+  if (awaiting) $("#batch-review-summary").textContent = `第 ${Math.max(1, wf.current_chapter - (wf.input?.batch_size || 3))}-${wf.batch_end} 章已经完成并保存。确认后会继续下一轮连续章节。`;
+}
+
+async function continueBatch() {
+  if (!state.workflowId) return;
+  const btn = $("#btn-continue-batch");
+  btn.disabled = true;
+  try {
+    const wf = await apiPost(`/api/workflows/${state.workflowId}/approve`, { outline: "" });
+    applyWorkflow(wf);
+    showToast("已确认，继续下一批");
+  } catch (e) { showToast("继续失败：" + e.message); }
+  finally { btn.disabled = false; }
+}
+
+async function skipReview() {
+  if (!state.workflowId || !state.workflow) return;
+  const btn = $("#btn-skip-review");
+  btn.disabled = true;
+  try {
+    const content = $("#review-outline").value.trim();
+    const wf = await apiPost(`/api/workflows/${state.workflowId}/approve`, { outline: content });
+    applyWorkflow(wf);
+    showToast("已跳过本次审核");
+  } catch (e) { showToast("跳过失败：" + e.message); }
+  finally { btn.disabled = false; }
+}
+
+async function approveReview() {
+  if (!state.workflowId) return;
+  const btn = $("#btn-approve-review");
+  const outline = $("#review-outline").value.trim();
+  if (!outline) { showToast("请保留或填写章节细纲"); return; }
+  btn.disabled = true;
+  btn.textContent = "正在确认...";
+  try {
+    const wf = await apiPost("/api/workflows/" + state.workflowId + "/approve", { outline });
+    if (state.workflow?.status === "awaiting_background_review") state.stepOutputs.background = outline;
+    else if (state.workflow?.status === "awaiting_review") state.stepOutputs.outline = outline;
+    else state.stepOutputs.chapter_outline = outline;
+    $("#review-outline").dataset.edited = "";
+    applyWorkflow(wf);
+    showToast("审核已确认，流程继续执行");
+  } catch (e) {
+    showToast("确认失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "确认并继续";
+  }
 }
 
 function renderRunHeader() {
   const wf = state.workflow;
   if (!wf) return;
   $("#run-title").textContent = wf.input?.title || "未命名小说";
-  const meta = [wf.input?.genre, wf.input?.chapters ? wf.input.chapters + " 章" : "", wf.input?.words_per_chapter ? "约 " + wf.input.words_per_chapter + " 字/章" : ""].filter(Boolean).join(" · ");
+  const meta = [wf.input?.genre, wf.input?.total_words ? "目标 " + Number(wf.input.total_words).toLocaleString() + " 字" : "", wf.current_volume ? "当前第 " + wf.current_volume + " 卷" : "", wf.input?.chapters ? "预计 " + wf.input.chapters + " 章" : "", wf.input?.batch_size ? "每轮 " + wf.input.batch_size + " 章" : ""].filter(Boolean).join(" · ");
   $("#run-meta").textContent = meta;
   const badge = $("#run-status-badge");
   badge.textContent = statusText(wf.status);
   badge.className = "badge " + (wf.status || "pending");
+  $("#btn-retry").hidden = wf.status !== "error";
+  const chapterInput = $("#in-select-chapter");
+  chapterInput.max = wf.input?.chapters || 1;
+  if (!chapterInput.dataset.edited) chapterInput.value = Math.min(wf.current_chapter || 1, wf.input?.chapters || 1);
+}
+
+async function selectChapter() {
+  if (!state.workflowId || !state.workflow) return;
+  const input = $("#in-select-chapter");
+  const chapter = parseInt(input.value, 10);
+  if (!chapter) { showToast("请输入要开始生成的章节号"); return; }
+  const btn = $("#btn-select-chapter");
+  btn.disabled = true;
+  try {
+    const wf = await apiPost(`/api/workflows/${state.workflowId}/select-chapter`, { chapter });
+    input.dataset.edited = "";
+    applyWorkflow(wf);
+    connectStream(state.workflowId);
+    showToast(`将从第 ${chapter} 章开始生成，已有章节不会删除`);
+  } catch (e) { showToast("无法选择章节：" + e.message); }
+  finally { btn.disabled = false; }
+}
+
+async function retryWorkflow() {
+  if (!state.workflowId) return;
+  const btn = $("#btn-retry");
+  btn.disabled = true;
+  btn.textContent = "正在重试...";
+  try {
+    const wf = await apiPost("/api/workflows/" + state.workflowId + "/retry", {});
+    applyWorkflow(wf);
+    connectStream(state.workflowId);
+  } catch (e) {
+    showToast("重试失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "↻ 重试";
+  }
 }
 
 function updateLiveOutput(step) {
@@ -452,7 +724,9 @@ function renderActiveTab() {
   if (tab === "background") {
     html = mdWrap(state.stepOutputs.background || wf?.steps?.background?.output || "");
   } else if (tab === "outline") {
-    html = mdWrap(state.stepOutputs.outline || wf?.steps?.outline?.output || "");
+    const volume = state.stepOutputs.outline || wf?.steps?.outline?.output || "";
+    const batch = state.stepOutputs.chapter_outline || wf?.steps?.chapter_outline?.output || "";
+    html = mdWrap((volume ? "# 本卷规划\n\n" + volume : "") + (batch ? "\n\n# 本轮章节细纲\n\n" + batch : ""));
   } else if (tab === "archive") {
     html = mdWrap(state.stepOutputs.archiver || wf?.steps?.archiver?.output || "");
   } else if (tab === "chapters") {
@@ -482,6 +756,21 @@ function renderChaptersPanel() {
       <div class="chapter-body">${escHtml(body)}</div>
     </div>`;
   }).join("");
+}
+
+function bindChapterSegs() {
+  $$(".chapter-seg").forEach((segWrap) => {
+    segWrap.querySelectorAll(".seg").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        segWrap.querySelectorAll(".seg").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const no = parseInt(btn.dataset.ch, 10);
+        const seg = btn.dataset.seg;
+        const c = state.chapters.find((x) => x.no === no);
+        if (c) segWrap.parentElement.querySelector(".chapter-body").textContent = seg === "draft" ? (c.draft || "") : (c.polished || c.draft || "");
+      });
+    });
+  });
 }
 
 function updateDownload() {
@@ -532,7 +821,7 @@ async function openHistory() {
   try {
     const data = await apiGet("/api/workflows");
     const wfs = data.workflows || [];
-    if (!wfs.length) { list.innerHTML = '<div class="empty">暂无历史记录。完成一次创作后，归档文件会保存在 output/ 目录，重启后仍可在这里看到。</div>'; return; }
+    if (!wfs.length) { list.innerHTML = '<div class="empty">暂无历史记录。新建项目后，记录和断点会保存在桌面 NovelFlow作品 目录。</div>'; return; }
     list.innerHTML = wfs.map((w) => `
       <div class="history-item" data-id="${w.id}">
         <div class="hi-main">
@@ -560,7 +849,7 @@ async function openWorkflow(id) {
     state.chapters = ch.chapters || [];
     switchView("run");
     renderActiveTab();
-    if (wf.status === "running" || wf.status === "pending") connectStream(id);
+    if (wf.status === "running" || wf.status === "pending" || wf.status.startsWith("awaiting_")) connectStream(id);
   } catch (e) {
     showToast("打开失败：" + e.message);
   }
@@ -575,33 +864,6 @@ function downloadArchive() {
   }
 }
 
-/* ===================== 错误提示条 ===================== */
-function ensureErrorBanner() {
-  let el = $("#error-banner");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "error-banner";
-    el.style.cssText = "margin:0 0 18px;padding:12px 16px;border:1px solid #f85149;background:rgba(248,81,73,0.12);color:#ffb4ae;border-radius:9px;white-space:pre-wrap;word-break:break-word;font-size:13px;";
-    el.hidden = true;
-    const pipeline = $("#pipeline");
-    if (pipeline && pipeline.parentElement) {
-      pipeline.parentElement.insertBefore(el, pipeline);
-    } else {
-      document.body.appendChild(el);
-    }
-  }
-  return el;
-}
-function showErrorBanner(msg) {
-  const el = ensureErrorBanner();
-  el.textContent = "⚠️ " + msg;
-  el.hidden = false;
-}
-function hideErrorBanner() {
-  const el = $("#error-banner");
-  if (el) el.hidden = true;
-}
-
 /* ===================== Toast ===================== */
 let toastTimer = null;
 function showToast(msg) {
@@ -613,22 +875,42 @@ function showToast(msg) {
   toastTimer = setTimeout(() => {
     t.classList.remove("show");
     setTimeout(() => { t.hidden = true; }, 250);
-  }, 5000);
+  }, 3400);
 }
 
 /* ===================== 事件绑定 & 初始化 ===================== */
 function bindStaticEvents() {
   $("#btn-start").addEventListener("click", startWorkflow);
+  $("#btn-settings").addEventListener("click", openSettings);
+  $("#btn-api-view").addEventListener("click", openApiViewer);
+  $("#btn-close-api").addEventListener("click", closeApiViewer);
+  $("#btn-clear-settings-history").addEventListener("click", clearSettingsHistory);
+  $("#btn-close-settings").addEventListener("click", closeSettings);
+  $("#btn-save-settings").addEventListener("click", saveSettings);
   $("#btn-history").addEventListener("click", openHistory);
   $("#btn-new").addEventListener("click", () => { if (state.es) { state.es.close(); state.es = null; } switchView("create"); });
   $("#btn-close-history").addEventListener("click", () => { $("#history-modal").hidden = true; });
   $("#btn-download").addEventListener("click", downloadArchive);
+  $("#btn-retry").addEventListener("click", retryWorkflow);
+  $("#btn-select-chapter").addEventListener("click", selectChapter);
+  $("#btn-approve-review").addEventListener("click", approveReview);
+  $("#btn-skip-review").addEventListener("click", skipReview);
+  $("#btn-continue-batch").addEventListener("click", continueBatch);
+  $("#review-outline").addEventListener("input", () => { $("#review-outline").dataset.edited = "true"; });
+  $("#in-select-chapter").addEventListener("input", () => { $("#in-select-chapter").dataset.edited = "true"; });
   $("#history-modal").addEventListener("click", (e) => { if (e.target.id === "history-modal") e.target.hidden = true; });
+  $("#settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") closeSettings(); });
+  $("#api-modal").addEventListener("click", (e) => { if (e.target.id === "api-modal") closeApiViewer(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#settings-modal").hidden) closeSettings();
+    if (e.key === "Escape" && !$("#api-modal").hidden) closeApiViewer();
+  });
 
   $$("#result-tabs .tab").forEach((tab) => {
     tab.addEventListener("click", () => { state.activeTab = tab.dataset.tab; renderActiveTab(); });
   });
 
+  // 章节切换事件委托
   $("#tab-panels").addEventListener("click", (e) => {
     const seg = e.target.closest(".seg");
     if (!seg) return;
@@ -644,6 +926,21 @@ function bindStaticEvents() {
 async function init() {
   bindStaticEvents();
   try {
+    const recalc = () => {
+      const total = parseInt($("#in-total-words").value, 10) || 0;
+      const words = parseInt($("#in-words").value, 10) || 2000;
+      const volumeWords = parseInt($("#in-volume-words").value, 10) || 100000;
+      const chapters = Math.max(1, Math.ceil(total / words));
+      const chaptersPerVolume = Math.max(1, Math.ceil(volumeWords / words));
+      $("#in-chapters").value = chapters;
+      $("#in-volumes").value = Math.max(1, Math.ceil(chapters / chaptersPerVolume));
+      $("#in-start-chapter").max = chapters;
+      if (parseInt($("#in-start-chapter").value, 10) > chapters) $("#in-start-chapter").value = chapters;
+    };
+    $("#in-total-words").addEventListener("input", recalc);
+    $("#in-words").addEventListener("input", recalc);
+    $("#in-volume-words").addEventListener("input", recalc);
+    recalc();
     await loadSettings();
   } catch (e) {
     showToast("加载设置失败：" + e.message);

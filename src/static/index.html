@@ -16,6 +16,8 @@
       </div>
     </div>
     <div class="topbar-actions">
+      <button id="btn-settings" class="btn ghost" aria-haspopup="dialog">⚙️ AI 配置</button>
+      <button id="btn-api-view" class="btn ghost" aria-haspopup="dialog">⌁ 查看 API</button>
       <button id="btn-history" class="btn ghost">🕘 历史记录</button>
       <button id="btn-new" class="btn primary">＋ 新建项目</button>
     </div>
@@ -27,7 +29,7 @@
       <div class="create-grid">
         <div class="card novel-card">
           <h2>📖 小说信息</h2>
-          <p class="hint">填写你的创作灵感，AI 将按「背景设计 → 章节细纲 → 主笔创作 → 润色修改 → 自动归档」全流程完成创作。</p>
+          <p class="hint">这是一个长期创作项目。系统按当前卷和连续章节循环推进，所有成果都会保存到桌面 NovelFlow作品 文件夹。</p>
           <form id="novel-form" autocomplete="off">
             <div class="field">
               <label for="in-title">书名 <span class="req">*</span></label>
@@ -61,26 +63,39 @@
             </div>
             <div class="field-row">
               <div class="field">
-                <label for="in-chapters">章节数</label>
-                <input id="in-chapters" type="number" min="1" max="200" value="3">
+                <label for="in-total-words">全书目标字数</label>
+                <input id="in-total-words" type="number" min="500" max="10000000" step="10000" value="100000">
               </div>
               <div class="field">
                 <label for="in-words">每章目标字数</label>
                 <input id="in-words" type="number" min="500" max="20000" step="500" value="2000">
               </div>
             </div>
+            <div class="field-row">
+              <div class="field"><label for="in-batch-size">每轮连续章节数</label><input id="in-batch-size" type="number" min="3" max="5" value="3"></div>
+              <div class="field"><label for="in-start-chapter">正文从第几章开始</label><input id="in-start-chapter" type="number" min="1" value="1"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label>预计章节数</label><input id="in-chapters" type="number" value="50" readonly></div>
+              <div class="field field-spacer" aria-hidden="true"></div>
+            </div>
+            <div class="project-settings">
+              <strong>项目流程设置</strong>
+              <label class="switch"><input id="in-skip-volume-review" type="checkbox"><span>跳过卷规划审核</span></label>
+              <label class="switch"><input id="in-skip-outline-review" type="checkbox"><span>跳过章节细纲审核</span></label>
+              <label class="switch"><input id="in-skip-body-review" type="checkbox"><span>跳过正文审核，自动进入下一轮</span></label>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="in-volume-words">每卷目标字数</label><input id="in-volume-words" type="number" min="10000" max="2000000" step="10000" value="100000"></div>
+              <div class="field"><label>预计卷数</label><input id="in-volumes" type="number" value="1" readonly></div>
+            </div>
           </form>
         </div>
 
-        <div class="card settings-card">
-          <h2>🤖 AI 角色配置</h2>
-          <p class="hint">每个角色可独立填写 API Key、端点与模型，支持任意 OpenAI 兼容接口（OpenAI / DeepSeek / Kimi / Ollama / LM Studio 等）。</p>
-          <div id="settings-list" class="settings-list"></div>
-        </div>
       </div>
 
       <div class="start-bar">
-        <button id="btn-start" class="btn start">🚀 开始全流程创作</button>
+        <button id="btn-start" class="btn start">开始当前卷创作</button>
       </div>
     </section>
 
@@ -93,11 +108,35 @@
         </div>
         <div class="run-actions">
           <span id="run-status-badge" class="badge pending">等待中</span>
-          <button id="btn-download" class="btn success" disabled>⬇️ 下载全书</button>
+          <div class="chapter-jump"><label for="in-select-chapter">从第</label><input id="in-select-chapter" type="number" min="1" value="1"><span>章继续</span><button id="btn-select-chapter" class="btn mini ghost">生成</button></div>
+          <button id="btn-retry" class="btn ghost" hidden>↻ 重试</button>
+          <button id="btn-download" class="btn success" disabled>⬇️ 查看当前成果</button>
         </div>
       </div>
 
       <div class="pipeline" id="pipeline"></div>
+
+      <section id="review-gate" class="review-gate" hidden aria-labelledby="review-title">
+        <div class="review-heading">
+          <div>
+            <h3 id="review-title">人工审核</h3>
+            <p id="review-desc">你可以修改内容后确认继续，也可以直接跳过审核。</p>
+          </div>
+          <span class="badge awaiting_review">等待确认</span>
+        </div>
+          <label id="review-label" for="review-outline">审核内容</label>
+        <textarea id="review-outline" rows="16" spellcheck="false"></textarea>
+        <div class="review-actions">
+          <button id="btn-skip-review" class="btn ghost">跳过审核</button>
+          <button id="btn-approve-review" class="btn primary">确认并继续</button>
+        </div>
+      </section>
+
+      <section id="batch-review-gate" class="review-gate" hidden aria-labelledby="batch-review-title">
+        <div class="review-heading"><div><h3 id="batch-review-title">人工审核本轮正文</h3><p>本轮正文已完成、润色并写入连续性记忆。确认后继续下一轮连续章节。</p></div><span class="badge awaiting_review">等待确认</span></div>
+        <div id="batch-review-summary" class="batch-review-summary"></div>
+        <div class="review-actions"><button id="btn-continue-batch" class="btn primary">确认并继续下一轮</button></div>
+      </section>
 
       <div class="progress-wrap" id="progress-wrap" hidden>
         <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
@@ -107,12 +146,13 @@
       <div class="run-grid">
         <div class="card live-card">
           <h3>📡 实时输出 <span id="live-step-label" class="live-step-label"></span></h3>
+          <div class="live-meta"><span id="live-connection" class="live-connection idle">未连接</span><span id="live-count">0 字符</span></div>
           <pre id="live-output" class="live-output"></pre>
         </div>
         <div class="card tabs-card">
           <div class="tabs" id="result-tabs">
             <button class="tab active" data-tab="background">🌍 背景设定</button>
-            <button class="tab" data-tab="outline">🗺️ 章节细纲</button>
+            <button class="tab" data-tab="outline">🗺️ 当前规划与细纲</button>
             <button class="tab" data-tab="chapters">📚 正文</button>
             <button class="tab" data-tab="archive">📦 归档</button>
           </div>
@@ -133,8 +173,38 @@
     </div>
   </div>
 
+  <div id="settings-modal" class="modal settings-modal" hidden role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-box settings-modal-box">
+      <div class="modal-head">
+        <div>
+          <h2 id="settings-title">⚙️ AI 配置</h2>
+          <p class="hint">填写 API Key、端点和模型。默认配置会应用到所有跟随默认的角色。</p>
+        </div>
+        <button class="modal-close" id="btn-close-settings" aria-label="关闭 AI 配置">✕</button>
+      </div>
+      <div id="settings-list" class="settings-list"></div>
+      <div class="settings-memory">
+        <div class="memory-head"><div><strong>配置记忆</strong><small>仅保存在当前浏览器，包含 API Key；清除站点数据后会消失。</small></div><button id="btn-clear-settings-history" class="btn mini ghost">清空记忆</button></div>
+        <div id="settings-history-list" class="settings-history-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-save-settings" class="btn primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="api-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="api-title">
+    <div class="modal-box api-modal-box">
+      <div class="modal-head">
+        <div><h2 id="api-title">⌁ API 地址</h2><p class="hint">这里显示每个角色实际使用的 OpenAI 兼容接口，不会显示完整 API Key。</p></div>
+        <button class="modal-close" id="btn-close-api" aria-label="关闭 API 地址">✕</button>
+      </div>
+      <div id="api-list" class="api-list"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260818-rounds"></script>
 </body>
 </html>

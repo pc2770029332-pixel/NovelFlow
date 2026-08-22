@@ -86,8 +86,7 @@ html, body {
 .view.active { display: block; animation: fadeIn 0.25s; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-.create-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 20px; align-items: start; }
-@media (max-width: 960px) { .create-grid { grid-template-columns: 1fr; } }
+.create-grid { max-width: 720px; margin: 0 auto; }
 
 /* ============ 卡片 ============ */
 .card {
@@ -122,12 +121,17 @@ html, body {
 .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
 .field textarea { resize: vertical; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.field-spacer { visibility: hidden; }
+.project-settings { display: grid; gap: 8px; margin-top: 4px; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.project-settings strong { font-size: 13px; color: var(--text); }
+.project-settings .switch { justify-content: flex-start; }
 
 /* ============ 设置面板 ============ */
 .settings-list { display: flex; flex-direction: column; gap: 12px; max-height: 620px; overflow-y: auto; padding-right: 4px; }
 .role-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; background: var(--bg); }
 .role-card.role-default { border-color: var(--accent); background: var(--accent-soft); }
 .role-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.role-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .role-title { display: flex; align-items: center; gap: 9px; }
 .role-icon { font-size: 20px; }
 .role-title strong { display: block; font-size: 14px; }
@@ -151,6 +155,9 @@ html, body {
 .run-title-wrap h2 { margin: 0 0 4px; font-size: 22px; }
 .run-meta { color: var(--muted); font-size: 12.5px; }
 .run-actions { display: flex; align-items: center; gap: 10px; }
+.chapter-jump { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chapter-jump input { width: 58px; padding: 6px 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); }
+.chapter-jump input:focus { outline: none; border-color: var(--accent); }
 .badge {
   display: inline-block;
   padding: 4px 12px;
@@ -163,6 +170,9 @@ html, body {
 .badge.running { background: var(--accent-soft); color: #b9a5ff; border-color: var(--accent); animation: pulse 1.4s infinite; }
 .badge.done { background: rgba(63, 185, 80, 0.15); color: var(--green); border-color: var(--green); }
 .badge.error { background: rgba(248, 81, 73, 0.15); color: var(--red); border-color: var(--red); }
+.badge.awaiting_review { background: rgba(210, 153, 34, 0.15); color: var(--yellow); border-color: var(--yellow); }
+.badge.awaiting_batch_review, .badge.awaiting_chapter_review, .badge.awaiting_body_review, .badge.awaiting_handoff_review { background: rgba(210, 153, 34, 0.15); color: var(--yellow); border-color: var(--yellow); }
+.batch-review-summary { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--muted); }
 @keyframes pulse { 50% { opacity: 0.65; } }
 
 /* 流水线 */
@@ -185,8 +195,19 @@ html, body {
 .pipe-step.running .pipe-label { color: #b9a5ff; }
 .pipe-step.done .pipe-label { color: var(--green); }
 .pipe-step.error .pipe-label { color: var(--red); }
+.pipe-step.running .pipe-label { color: #b9a5ff; }
 .pipe-line { flex: 0.6; height: 2px; background: var(--border); min-width: 16px; }
 .pipe-line.done { background: var(--green); }
+
+/* 人工审核 */
+.review-gate { margin-bottom: 18px; padding: 20px; background: var(--bg2); border: 1px solid var(--yellow); border-radius: var(--radius); box-shadow: var(--shadow); }
+.review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.review-heading h3 { margin: 0 0 4px; font-size: 16px; }
+.review-heading p { margin: 0; color: var(--muted); font-size: 13px; }
+.review-gate > label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12.5px; }
+.review-gate textarea { width: 100%; min-height: 320px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: 13px/1.7 "SF Mono", Consolas, "Courier New", monospace; resize: vertical; }
+.review-gate textarea:focus { outline: none; border-color: var(--yellow); }
+.review-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 
 /* 进度条 */
 .progress-wrap { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
@@ -209,6 +230,12 @@ html, body {
   color: #c9d4de;
 }
 .live-step-label { font-size: 12px; color: var(--cyan); font-weight: normal; }
+.live-meta { display: flex; justify-content: space-between; align-items: center; margin: -4px 0 10px; color: var(--muted); font-size: 11.5px; }
+.live-connection { display: inline-flex; align-items: center; gap: 5px; }
+.live-connection::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.live-connection.idle { color: var(--muted); }
+.live-connection.connecting, .live-connection.reconnecting { color: var(--yellow); }
+.live-connection.connected { color: var(--green); }
 
 /* 标签页 */
 .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -256,6 +283,24 @@ html, body {
 .modal-head h2 { margin: 0; font-size: 17px; }
 .modal-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; }
 .modal-close:hover { color: var(--text); }
+.settings-modal-box { width: min(880px, 94vw); max-height: min(820px, 88vh); }
+.settings-modal .modal-head { align-items: flex-start; }
+.settings-modal .modal-head .hint { margin: 4px 34px 0 0; }
+.modal-actions { display: flex; justify-content: flex-end; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--border); }
+.settings-memory { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.memory-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.memory-head strong, .memory-head small { display: block; }
+.memory-head small, .memory-empty, .memory-item small { color: var(--muted); font-size: 11.5px; }
+.settings-history-list { display: flex; flex-direction: column; gap: 6px; max-height: 145px; overflow-y: auto; }
+.memory-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.memory-item strong, .memory-item small { display: block; }
+.memory-actions { display: flex; gap: 6px; }
+.api-modal-box { width: min(780px, 92vw); max-height: 82vh; }
+.api-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.api-item { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.api-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.api-item code { display: block; color: var(--cyan); font: 12px/1.5 "SF Mono", Consolas, monospace; overflow-wrap: anywhere; }
+.api-item small { display: block; margin-top: 5px; color: var(--muted); font-size: 11.5px; }
 .history-list { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .history-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 13px 15px; background: var(--bg); cursor: pointer; transition: border-color 0.15s; }
 .history-item:hover { border-color: var(--accent); }
@@ -286,3 +331,20 @@ html, body {
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: #344154; }
+
+@media (max-width: 640px) {
+  html, body { overflow-x: clip; }
+  .topbar { padding: 10px 14px; }
+  .brand-text p { display: none; }
+  .topbar-actions { gap: 6px; }
+  .topbar-actions .btn { padding: 8px 10px; font-size: 12px; }
+  #app { padding: 14px; }
+  .field-row, .role-fields { grid-template-columns: minmax(0, 1fr); }
+  .role-fields .field:first-child, .role-fields .field:nth-child(2) { grid-column: auto; }
+  .settings-modal { align-items: flex-start; }
+  .settings-modal-box { width: 100vw; max-width: 100vw; max-height: 100vh; min-height: 100vh; border: 0; border-radius: 0; padding: 18px 14px; }
+  .settings-list { max-height: none; flex: 1; }
+  .review-heading { flex-direction: column; gap: 8px; }
+  .review-gate { padding: 16px; }
+  .review-gate textarea { min-height: 260px; }
+}
